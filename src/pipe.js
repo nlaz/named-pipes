@@ -1,9 +1,16 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { Transform } from 'stream';
 
-export class NamedPipe {
+export class NamedPipe extends Transform {
   constructor(options = {}) {
+    super({
+      highWaterMark: options.highWaterMark,
+      defaultEncoding: options.defaultEncoding || 'utf8',
+      ...options
+    });
+
     if (options.pipePath) {
       this.pipePath = options.pipePath;
     } else {
@@ -14,6 +21,11 @@ export class NamedPipe {
 
     this.created = false;
     this.writeStream = null;
+    this.readStream = null;
+    this.closed = false;
+
+    process.on('SIGINT', () => this.cleanup());
+    process.on('SIGTERM', () => this.cleanup());
   }
 
   async ensureTmpDir() {
@@ -28,42 +40,72 @@ export class NamedPipe {
 
     try {
       await this.ensureTmpDir();
-
       if (!fs.existsSync(this.pipePath)) {
         execSync(`mkfifo ${this.pipePath}`);
         this.created = true;
       }
+
+      this.writeStream = fs.createWriteStream(this.pipePath);
+      this.readStream = fs.createReadStream(this.pipePath);
+
+      this.writeStream.on('error', (err) => this.emit('error', err));
+      this.readStream.on('error', (err) => this.emit('error', err));
+
+      this.readStream.on('data', (chunk) => {
+        this.push(chunk);
+      });
+
+      this.readStream.on('end', () => {
+        this.push(null);
+      });
+
     } catch (error) {
       throw new Error(`Failed to create named pipe at ${this.pipePath}: ${error.message}`);
     }
-
-    process.on('SIGINT', () => this.cleanup());
-    process.on('SIGTERM', () => this.cleanup());
   }
 
-  createWriteStream() {
-    if (!this.created) {
-      throw new Error('Pipe must be created before creating a write stream');
+  _transform(chunk, encoding, callback) {
+    if (!this.created || !this.writeStream) {
+      return callback(new Error('Pipe must be created before writing'));
     }
 
-    this.writeStream = fs.createWriteStream(this.pipePath);
-    return this.writeStream;
-  }
-
-  pipe(inputStream) {
-    if (!inputStream?.readable) {
-      throw new Error('Input must be a readable stream');
-    }
-
-    const writeStream = this.createWriteStream();
-    inputStream.pipe(writeStream);
-
-    inputStream.on('error', (error) => {
-      console.error(`Input stream error: ${error.message}`);
-      this.cleanup();
+    this.writeStream.write(chunk, encoding, (error) => {
+      if (error) {
+        callback(error);
+      } else {
+        callback();
+      }
     });
+  }
 
-    return writeStream;
+  _flush(callback) {
+    if (this.writeStream) {
+      this.writeStream.end(() => {
+        this.readStream.once('end', () => {
+          callback();
+        });
+      });
+    } else {
+      callback();
+    }
+  }
+
+  _final(callback) {
+    this.cleanup();
+    callback();
+  }
+
+  _destroy(error, callback) {
+    this.cleanup();
+    callback(error);
+  }
+
+  pipe(destination, options) {
+    if (!this.created) {
+      throw new Error('Pipe must be created before piping');
+    }
+
+    return super.pipe(destination, options);
   }
 
   get() {
@@ -71,12 +113,18 @@ export class NamedPipe {
   }
 
   cleanup() {
+    if (this.closed) return;
+    this.closed = true;
+
     try {
       if (this.writeStream) {
         this.writeStream.end();
         this.writeStream = null;
       }
-
+      if (this.readStream) {
+        this.readStream.destroy();
+        this.readStream = null;
+      }
       if (this.created && fs.existsSync(this.pipePath)) {
         fs.unlinkSync(this.pipePath);
         this.created = false;
