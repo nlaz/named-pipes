@@ -1,0 +1,11 @@
+{
+  "name": "named-pipes",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.js",
+    "dev": "bun --watch --no-warnings src/index.js",
+    "build": "bun build src/index.js --minify --outdir dist --target bun"
+  }
+}
