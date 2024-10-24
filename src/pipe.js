@@ -28,6 +28,12 @@ export class NamedPipe extends Transform {
     process.on('SIGTERM', () => this.cleanup());
   }
 
+  static async create(options = {}) {
+    const pipe = new NamedPipe(options);
+    await pipe.initialize();
+    return pipe;
+  }
+
   async ensureTmpDir() {
     const dir = path.dirname(this.pipePath);
     if (!fs.existsSync(dir)) {
@@ -35,8 +41,8 @@ export class NamedPipe extends Transform {
     }
   }
 
-  async create() {
-    if (this.created) return;
+  async initialize() {
+    if (this.created) return this;
 
     try {
       await this.ensureTmpDir();
@@ -59,6 +65,7 @@ export class NamedPipe extends Transform {
         this.push(null);
       });
 
+      return this;
     } catch (error) {
       throw new Error(`Failed to create named pipe at ${this.pipePath}: ${error.message}`);
     }
